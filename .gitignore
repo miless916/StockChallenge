@@ -1,0 +1,8 @@
+# Never commit your API keys
+.env
+
+# Python cache/venv files
+__pycache__/
+*.pyc
+venv/
+.venv/

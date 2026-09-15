@@ -1,0 +1,7 @@
+anthropic
+openai
+google-genai
+yfinance
+pandas
+openpyxl
+python-dotenv
