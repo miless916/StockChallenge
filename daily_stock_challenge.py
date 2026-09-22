@@ -44,7 +44,7 @@ load_dotenv()
 CLAUDE_MODEL = "claude-sonnet-5"
 OPENAI_MODEL = "gpt-5.4"
 GEMINI_MODEL_PRIMARY = "gemini-flash-latest"
-GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"
+GEMINI_MODEL_FALLBACK = "gemini-3.6-flash"  # tried if primary is overloaded
 
 PROMPT = (
     "You are participating in a stock-picking challenge. Based on current "
@@ -89,11 +89,24 @@ def _retry_call(fn, label, max_retries=4):
 
 # ---------------- AI query functions ----------------
 
+def _ipv4_http_client(timeout=30.0):
+    """Build an httpx client that forces IPv4. Works around a known issue
+    where some cloud CI runners (including GitHub Actions) have broken or
+    unreliable IPv6 routing, causing connection failures to hosts that
+    offer IPv6 addresses even though general internet access works fine."""
+    import httpx
+    transport = httpx.HTTPTransport(local_address="0.0.0.0")
+    return httpx.Client(transport=transport, timeout=timeout)
+
+
 def ask_claude():
     from anthropic import Anthropic
 
     def _call():
-        client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], timeout=30.0)
+        client = Anthropic(
+            api_key=os.environ["ANTHROPIC_API_KEY"],
+            http_client=_ipv4_http_client(),
+        )
         response = client.messages.create(
             model=CLAUDE_MODEL,
             max_tokens=150,
@@ -108,7 +121,10 @@ def ask_chatgpt():
     from openai import OpenAI
 
     def _call():
-        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=30.0)
+        client = OpenAI(
+            api_key=os.environ["OPENAI_API_KEY"],
+            http_client=_ipv4_http_client(),
+        )
         response = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[{"role": "user", "content": PROMPT}],
