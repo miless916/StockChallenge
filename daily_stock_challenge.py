@@ -1,9 +1,11 @@
 """
-AI Stock Picking Challenge - Full Automation (v4)
+AI Stock Picking Challenge - Full Automation (v5)
 ------------------------------------------------------------------------
 Each time you run this script, it:
   1. Asks Claude, ChatGPT, and Gemini for 5 stock picks each, with a
      1-10 confidence rating for each pick (same prompt to all three).
+     All three calls now retry automatically on transient connection
+     errors (common on cloud CI runners like GitHub Actions).
   2. Parses each response into (ticker, confidence) pairs.
   3. Fills in "Day 1" (next trading day close) prices for any picks
      from a previous run that are still pending.
@@ -25,10 +27,6 @@ NOTE ON MODEL NAMES: check current model names if a call errors with
     - Anthropic: https://docs.claude.com/en/docs/about-claude/models
     - OpenAI:    https://platform.openai.com/docs/models
     - Gemini:    https://ai.google.dev/gemini-api/docs/models
-
-NOTE: if you already have a stock_challenge_log.csv from before this
-version (no Confidence column), that's fine — old rows will just show
-blank confidence values. No need to delete the file.
 """
 
 import os
@@ -46,7 +44,7 @@ load_dotenv()
 CLAUDE_MODEL = "claude-sonnet-5"
 OPENAI_MODEL = "gpt-5.4"
 GEMINI_MODEL_PRIMARY = "gemini-flash-latest"
-GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"  # tried if primary is overloaded
+GEMINI_MODEL_FALLBACK = "gemini-2.5-flash"
 
 PROMPT = (
     "You are participating in a stock-picking challenge. Based on current "
@@ -63,40 +61,65 @@ PROMPT = (
 OUTPUT_FILE = "stock_challenge_log.csv"
 COLUMNS = ["Date_Picked", "Source", "Ticker", "Confidence", "Price_Day0", "Price_Day1"]
 
+TRANSIENT_ERROR_KEYWORDS = ["connection", "timeout", "timed out", "503", "unavailable", "overloaded"]
+
+
+def _is_transient(error):
+    text = str(error).lower()
+    return any(keyword in text for keyword in TRANSIENT_ERROR_KEYWORDS)
+
+
+def _retry_call(fn, label, max_retries=4):
+    """Call fn() with retries on transient errors, exponential-ish backoff."""
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            return fn()
+        except Exception as e:
+            last_error = e
+            if _is_transient(e):
+                wait_seconds = 5 * attempt
+                print(f"  {label} transient error (attempt {attempt}/{max_retries}): {e}")
+                print(f"  Retrying in {wait_seconds}s...")
+                time.sleep(wait_seconds)
+            else:
+                raise  # not transient — fail immediately, no point retrying
+    raise last_error
+
 
 # ---------------- AI query functions ----------------
 
 def ask_claude():
     from anthropic import Anthropic
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    response = client.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=150,
-        messages=[{"role": "user", "content": PROMPT}],
-    )
-    return response.content[0].text
+
+    def _call():
+        client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], timeout=30.0)
+        response = client.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=150,
+            messages=[{"role": "user", "content": PROMPT}],
+        )
+        return response.content[0].text
+
+    return _retry_call(_call, "Claude")
 
 
 def ask_chatgpt():
     from openai import OpenAI
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    response = client.chat.completions.create(
-        model=OPENAI_MODEL,
-        messages=[{"role": "user", "content": PROMPT}],
-        max_completion_tokens=150,
-    )
-    return response.choices[0].message.content
+
+    def _call():
+        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=30.0)
+        response = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[{"role": "user", "content": PROMPT}],
+            max_completion_tokens=150,
+        )
+        return response.choices[0].message.content
+
+    return _retry_call(_call, "ChatGPT")
 
 
-def _call_gemini_model(client, model_name):
-    response = client.models.generate_content(
-        model=model_name,
-        contents=PROMPT,
-    )
-    return response.text
-
-
-def ask_gemini(max_retries=4):
+def ask_gemini():
     from google import genai
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
@@ -104,19 +127,14 @@ def ask_gemini(max_retries=4):
     last_error = None
 
     for model_name in models_to_try:
-        for attempt in range(1, max_retries + 1):
-            try:
-                return _call_gemini_model(client, model_name)
-            except Exception as e:
-                last_error = e
-                if "503" in str(e) or "UNAVAILABLE" in str(e):
-                    wait_seconds = 5 * attempt
-                    print(f"  Gemini ({model_name}) overloaded, attempt {attempt}/{max_retries}, "
-                          f"retrying in {wait_seconds}s...")
-                    time.sleep(wait_seconds)
-                else:
-                    break  # non-overload error, stop retrying this model, try fallback
-        print(f"  Giving up on {model_name}, trying next option if available...")
+        def _call():
+            response = client.models.generate_content(model=model_name, contents=PROMPT)
+            return response.text
+        try:
+            return _retry_call(_call, f"Gemini ({model_name})")
+        except Exception as e:
+            last_error = e
+            print(f"  Giving up on {model_name}, trying next option if available...")
 
     raise last_error
 
