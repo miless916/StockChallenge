@@ -49,3 +49,8 @@ Date_Picked,Source,Ticker,Price_Day0,Price_Day1,Unnamed: 5,Confidence
 2026-09-21,Gemini,MSFT,501.61,495.99,,6.0
 2026-09-21,Gemini,AMZN,258.45,254.61,,6.0
 2026-09-21,Gemini,AAPL,338.98,343.17,,6.0
+2026-09-22,Gemini,NVDA,228.33,,,7.0
+2026-09-22,Gemini,MSFT,493.81,,,7.0
+2026-09-22,Gemini,AAPL,342.23,,,6.0
+2026-09-22,Gemini,AMZN,254.67,,,7.0
+2026-09-22,Gemini,META,749.22,,,6.0
