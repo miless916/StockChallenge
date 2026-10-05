@@ -218,12 +218,23 @@ def get_price(ticker):
 
 # ---------------- Detailed log (per stock) ----------------
 
+def _normalize_date_column(series):
+    """Coerce a column of date-like strings (which may be a mix of
+    formats, e.g. if the file was ever opened and saved in Excel) into
+    a consistent YYYY-MM-DD string. This makes date sorting/compounding
+    correct regardless of how a date got written into the file."""
+    parsed = pd.to_datetime(series, errors="coerce")
+    return parsed.dt.strftime("%Y-%m-%d")
+
+
 def load_detail_log():
     if os.path.exists(DETAIL_FILE):
         df = pd.read_csv(DETAIL_FILE)
         for col in DETAIL_COLUMNS:
             if col not in df.columns:
                 df[col] = None
+        if "Date_Picked" in df.columns and not df.empty:
+            df["Date_Picked"] = _normalize_date_column(df["Date_Picked"])
         return df
     return pd.DataFrame(columns=DETAIL_COLUMNS)
 
@@ -273,7 +284,10 @@ def log_todays_picks(df, today_str, today_picks):
 
 def load_portfolio_log():
     if os.path.exists(PORTFOLIO_FILE):
-        return pd.read_csv(PORTFOLIO_FILE)
+        df = pd.read_csv(PORTFOLIO_FILE)
+        if "Date" in df.columns and not df.empty:
+            df["Date"] = _normalize_date_column(df["Date"])
+        return df
     return pd.DataFrame(columns=PORTFOLIO_COLUMNS)
 
 
