@@ -1,0 +1,29 @@
+name: Diagnose API Connectivity
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test connectivity to Anthropic
+        run: |
+          echo "=== Anthropic ==="
+          curl -v --max-time 15 https://api.anthropic.com/v1/models -H "x-api-key: test" 2>&1 | tail -30 || true
+
+      - name: Test connectivity to OpenAI
+        run: |
+          echo "=== OpenAI ==="
+          curl -v --max-time 15 https://api.openai.com/v1/models -H "Authorization: Bearer test" 2>&1 | tail -30 || true
+
+      - name: Test connectivity to Google/Gemini
+        run: |
+          echo "=== Gemini (control - known working) ==="
+          curl -v --max-time 15 https://generativelanguage.googleapis.com 2>&1 | tail -30 || true
+
+      - name: DNS resolution check
+        run: |
+          echo "=== DNS ==="
+          nslookup api.anthropic.com || true
+          nslookup api.openai.com || true
