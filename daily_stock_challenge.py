@@ -116,7 +116,7 @@ def ask_claude():
     from anthropic import Anthropic
 
     def _call():
-        client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], timeout=30.0)
+        client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"].strip(), timeout=30.0)
         try:
             response = client.messages.create(
                 model=CLAUDE_MODEL,
@@ -135,7 +135,7 @@ def ask_chatgpt():
     from openai import OpenAI
 
     def _call():
-        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=30.0)
+        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"].strip(), timeout=30.0)
         try:
             response = client.chat.completions.create(
                 model=OPENAI_MODEL,
@@ -152,7 +152,7 @@ def ask_chatgpt():
 
 def ask_gemini():
     from google import genai
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"].strip())
 
     models_to_try = [GEMINI_MODEL_PRIMARY, GEMINI_MODEL_FALLBACK]
     last_error = None
