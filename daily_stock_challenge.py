@@ -1,5 +1,5 @@
 """
-AI Stock Picking Challenge - Full Automation (v7)
+AI Stock Picking Challenge - Full Automation (v8)
 ------------------------------------------------------------------------
 Each time you run this script, it:
   1. Asks Claude, ChatGPT, and Gemini for 5 stock picks each, with a
@@ -10,10 +10,9 @@ Each time you run this script, it:
   4. Logs today's picks with today's closing price as "Day 0" into
      stock_challenge_log.csv (detailed, one row per stock per AI).
   5. Whenever a prior day's picks for an AI just got their Day 1 prices
-     filled in, computes that day's average return across its 5 picks
+     filled in, computes that day's average return across its picks
      and updates a running theoretical portfolio value for that AI
-     (starting at $1,000), saved to portfolio_value_log.csv (one row
-     per AI per day — this is the file to chart for comparing AIs).
+     (starting at $1,000), saved to portfolio_value_log.csv.
 
 Run this once per day, ideally right around market close.
 
@@ -25,13 +24,22 @@ SETUP (one-time):
         OPENAI_API_KEY=sk-...
         GEMINI_API_KEY=AIza...
 
-NOTE ON v7 CHANGE: curl testing from the GitHub Actions runner confirmed
-network connectivity to api.anthropic.com and api.openai.com is fine
-(real TLS handshakes, real 401 responses came back). So the earlier
-IPv4-forcing workaround was the wrong fix and has been removed. Instead,
-this version prints the FULL underlying exception chain (not just the
-generic "Connection error" message) when a call fails, so the real
-root cause shows up in the GitHub Actions log next time it happens.
+NOTE ON v8 CHANGES:
+  - New prompt: no Magnificent 7 stocks, and the models are encouraged
+    (not required) to diversify across sectors. If a model picks a Mag 7 stock anyway,
+    it is still logged (its call, its choice) — the run output just
+    flags it so you can see how often the rule gets ignored.
+  - New "Prompt_Version" column in BOTH CSVs. Rows logged before v8
+    are back-filled as "v1_open" (the original unconstrained prompt);
+    new rows are "v2_no_mag7_diversify". Filter or pivot on this column
+    to compare the two eras. Portfolio values keep compounding from
+    where they left off.
+  - Parser now handles class-share tickers like BRK.B (converted to
+    BRK-B for yfinance), which are more likely now that mega-caps are
+    excluded.
+  - Fixed same-day duplicate check: it was keyed on ticker only, so on
+    a re-run the same day, one AI's pick could block another AI's
+    identical pick. It's now keyed on (Source, Ticker).
 """
 
 import os
@@ -53,23 +61,35 @@ GEMINI_MODEL_FALLBACK = "gemini-3.6-flash"
 
 STARTING_PORTFOLIO_VALUE = 1000.0
 
+# ---- Prompt versioning ----
+PROMPT_VERSION = "v2_no_mag7_diversify"
+LEGACY_PROMPT_VERSION = "v1_open"   # label applied to rows logged before v8
+
+EXCLUDED_TICKERS = {"AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "META", "TSLA"}
+
 PROMPT = (
     "You are participating in a stock-picking challenge. Based on current "
     "market conditions, pick 5 publicly traded US stocks you believe are "
     "most likely to see their price increase over the next trading day. "
+    "RULES: (1) Do NOT pick any of the Magnificent 7 stocks "
+    "(AAPL, MSFT, GOOGL/GOOG, AMZN, NVDA, META, TSLA). "
+    "(2) You are encouraged to diversify across sectors, but if you "
+    "believe a particular sector is likely to rise, you may pick more "
+    "than one stock from it. "
     "For each pick, also give a confidence rating from 1 (low) to 10 (high) "
     "reflecting how confident you are in that specific pick. "
     "Respond with ONLY a comma-separated list in this exact format, "
     "nothing else — no explanation, no extra text: "
     "TICKER:CONFIDENCE, TICKER:CONFIDENCE, TICKER:CONFIDENCE, TICKER:CONFIDENCE, TICKER:CONFIDENCE "
-    "Example: AAPL:8, MSFT:6, GOOGL:7, AMZN:9, NVDA:5"
+    "Example: JPM:7, LLY:6, XOM:5, CAT:8, AVGO:6"
 )
 
 DETAIL_FILE = "stock_challenge_log.csv"
-DETAIL_COLUMNS = ["Date_Picked", "Source", "Ticker", "Confidence", "Price_Day0", "Price_Day1"]
+DETAIL_COLUMNS = ["Date_Picked", "Source", "Ticker", "Confidence",
+                  "Price_Day0", "Price_Day1", "Prompt_Version"]
 
 PORTFOLIO_FILE = "portfolio_value_log.csv"
-PORTFOLIO_COLUMNS = ["Date", "Source", "Daily_Return_Pct", "Portfolio_Value"]
+PORTFOLIO_COLUMNS = ["Date", "Source", "Daily_Return_Pct", "Portfolio_Value", "Prompt_Version"]
 
 TRANSIENT_ERROR_KEYWORDS = ["connection", "timeout", "timed out", "503", "unavailable", "overloaded", "rate limit"]
 
@@ -175,11 +195,24 @@ def ask_gemini():
 
 
 def parse_picks_with_confidence(raw_text, expected=5):
+    """Extract (ticker, confidence) pairs. Handles class shares like
+    BRK.B / BRK-B (normalized to BRK-B, the format yfinance uses).
+    Mag 7 tickers are kept even though the prompt rules them out;
+    they're only flagged in the run output."""
     if not raw_text:
         return []
-    pairs = re.findall(r"\b([A-Z]{1,5}):(\d{1,2})\b", raw_text)
+    pairs = re.findall(r"\b([A-Z]{1,5}(?:[.\-][A-Z])?):\s*(\d{1,2})\b", raw_text)
     stopwords = {"I", "A", "THE", "AND", "OR", "US", "USD"}
-    cleaned = [(t, int(c)) for t, c in pairs if t not in stopwords and 1 <= int(c) <= 10]
+
+    cleaned = []
+    for t, c in pairs:
+        t = t.replace(".", "-")
+        c = int(c)
+        if t in stopwords or not 1 <= c <= 10:
+            continue
+        if t in EXCLUDED_TICKERS:
+            print(f"    Note: {t} breaks the no-Mag-7 rule, keeping it anyway")
+        cleaned.append((t, c))
     return cleaned[:expected]
 
 
@@ -221,10 +254,18 @@ def get_price(ticker):
 def _normalize_date_column(series):
     """Coerce a column of date-like strings (which may be a mix of
     formats, e.g. if the file was ever opened and saved in Excel) into
-    a consistent YYYY-MM-DD string. This makes date sorting/compounding
-    correct regardless of how a date got written into the file."""
+    a consistent YYYY-MM-DD string."""
     parsed = pd.to_datetime(series, errors="coerce")
     return parsed.dt.strftime("%Y-%m-%d")
+
+
+def _backfill_prompt_version(df):
+    """Rows logged before v8 have no Prompt_Version; label them as the
+    original open-ended prompt."""
+    if "Prompt_Version" not in df.columns:
+        df["Prompt_Version"] = None
+    df["Prompt_Version"] = df["Prompt_Version"].fillna(LEGACY_PROMPT_VERSION)
+    return df
 
 
 def load_detail_log():
@@ -233,9 +274,9 @@ def load_detail_log():
         for col in DETAIL_COLUMNS:
             if col not in df.columns:
                 df[col] = None
-        if "Date_Picked" in df.columns and not df.empty:
+        if not df.empty:
             df["Date_Picked"] = _normalize_date_column(df["Date_Picked"])
-        return df
+        return _backfill_prompt_version(df)
     return pd.DataFrame(columns=DETAIL_COLUMNS)
 
 
@@ -254,16 +295,20 @@ def fill_pending_day1(df, today_str):
 
 
 def log_todays_picks(df, today_str, today_picks):
-    already_logged = set(
-        df[df["Date_Picked"] == today_str]["Ticker"].tolist()
-    ) if not df.empty else set()
+    # Keyed on (Source, Ticker) so one AI's pick never blocks another's.
+    if not df.empty:
+        todays = df[df["Date_Picked"] == today_str]
+        already_logged = set(zip(todays["Source"], todays["Ticker"]))
+    else:
+        already_logged = set()
 
     new_rows = []
     for source, pairs in today_picks.items():
         for ticker, confidence in pairs:
             ticker = ticker.strip().upper()
-            if not ticker or ticker in already_logged:
+            if not ticker or (source, ticker) in already_logged:
                 continue
+            already_logged.add((source, ticker))
             price = get_price(ticker)
             print(f"  {source:8s} {ticker:6s} (confidence {confidence}) -> Day0: {price}")
             new_rows.append({
@@ -273,6 +318,7 @@ def log_todays_picks(df, today_str, today_picks):
                 "Confidence": confidence,
                 "Price_Day0": price,
                 "Price_Day1": None,
+                "Prompt_Version": PROMPT_VERSION,
             })
 
     if new_rows:
@@ -287,7 +333,7 @@ def load_portfolio_log():
         df = pd.read_csv(PORTFOLIO_FILE)
         if "Date" in df.columns and not df.empty:
             df["Date"] = _normalize_date_column(df["Date"])
-        return df
+        return _backfill_prompt_version(df)
     return pd.DataFrame(columns=PORTFOLIO_COLUMNS)
 
 
@@ -296,9 +342,8 @@ def update_portfolio_values(detail_df, portfolio_df):
     For each (Date_Picked, Source) group in the detail log where every
     pick now has a Day1 price filled in, and that date+source isn't
     already recorded in the portfolio log, compute the average return
-    across the 5 picks and compound it into that AI's running portfolio
-    value. Processes in chronological order per source so compounding
-    is correct even if multiple days are caught up at once.
+    across the picks and compound it into that AI's running portfolio
+    value. Processes in chronological order per source.
     """
     already_done = set(zip(portfolio_df["Date"], portfolio_df["Source"])) if not portfolio_df.empty else set()
 
@@ -322,6 +367,7 @@ def update_portfolio_values(detail_df, portfolio_df):
 
             returns = (day_picks["Price_Day1"] - day_picks["Price_Day0"]) / day_picks["Price_Day0"]
             avg_return = returns.mean()
+            version = day_picks["Prompt_Version"].iloc[0]
 
             last_value = last_value * (1 + avg_return)
             new_rows.append({
@@ -329,8 +375,9 @@ def update_portfolio_values(detail_df, portfolio_df):
                 "Source": source,
                 "Daily_Return_Pct": round(avg_return * 100, 3),
                 "Portfolio_Value": round(last_value, 2),
+                "Prompt_Version": version,
             })
-            print(f"  Portfolio update: {source:8s} {date} avg return {avg_return*100:+.2f}% "
+            print(f"  Portfolio update: {source:8s} {date} [{version}] avg return {avg_return*100:+.2f}% "
                   f"-> ${last_value:,.2f}")
 
     if new_rows:
@@ -340,7 +387,7 @@ def update_portfolio_values(detail_df, portfolio_df):
 
 def main():
     today_str = datetime.now().strftime("%Y-%m-%d")
-    print(f"=== Running for {today_str} ===\n")
+    print(f"=== Running for {today_str} (prompt {PROMPT_VERSION}) ===\n")
 
     today_picks = get_todays_picks()
 
@@ -352,12 +399,14 @@ def main():
     print("\nStep 2: Logging today's picks...")
     detail_df = log_todays_picks(detail_df, today_str, today_picks)
 
+    detail_df = detail_df[DETAIL_COLUMNS]
     detail_df.to_csv(DETAIL_FILE, index=False)
     print(f"\nSaved detail log. {len(detail_df)} total rows in {DETAIL_FILE}")
 
     print("\nStep 3: Updating portfolio values...")
     portfolio_df = load_portfolio_log()
     portfolio_df = update_portfolio_values(detail_df, portfolio_df)
+    portfolio_df = portfolio_df[PORTFOLIO_COLUMNS]
     portfolio_df.to_csv(PORTFOLIO_FILE, index=False)
     print(f"Saved portfolio log. {len(portfolio_df)} total rows in {PORTFOLIO_FILE}")
 
