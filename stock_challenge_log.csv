@@ -298,3 +298,4 @@ Date_Picked,Source,Ticker,Confidence,Price_Day0,Price_Day1,Prompt_Version
 2026-10-23,Gemini,AVGO,7.0,323.24,,v2_no_mag7_diversify
 2026-10-23,Gemini,GE,6.0,293.54,,v2_no_mag7_diversify
 2026-10-23,Gemini,WMT,6.0,121.12,,v2_no_mag7_diversify
+2026-10-23,ChatGPT,COST,6.0,1003.32,,v2_no_mag7_diversify
