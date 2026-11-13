@@ -76,3 +76,6 @@ Date,Source,Daily_Return_Pct,Portfolio_Value,Prompt_Version
 2026-11-11,Gemini,1.503,1060.6,v2_no_mag7_diversify
 2026-11-11,ChatGPT,1.8,992.93,v2_no_mag7_diversify
 2026-11-11,Claude,1.405,992.79,v2_no_mag7_diversify
+2026-11-12,Gemini,1.427,1075.73,v2_no_mag7_diversify
+2026-11-12,ChatGPT,1.427,1007.1,v2_no_mag7_diversify
+2026-11-12,Claude,0.402,996.79,v2_no_mag7_diversify
